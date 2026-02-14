@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>勤怠QRスキャナー (重複防止・区分対応)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+        #reader { width: 100%; border-radius: 12px; overflow: hidden; background-color: #000; }
+        #reader video { object-fit: cover; border-radius: 12px; }
+        .modal { transition: opacity 0.2s ease-in-out; opacity: 0; pointer-events: none; }
+        .modal.active { opacity: 1; pointer-events: auto; }
+        #lock-screen { position: fixed; inset: 0; z-index: 40; background-color: #f8fafc; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: transform 0.3s ease-in-out; }
+        #lock-screen.hidden-lock { transform: translateY(-100%); }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f1f1; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #888; border-radius: 3px; }
+        .btn-press { transition: transform 0.1s; }
+        .btn-press:active { transform: scale(0.95); }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden text-gray-800">
+    <iframe name="hidden_iframe" id="hidden_iframe" style="display:none;"></iframe>
+    <form id="hidden_form" action="" method="post" target="hidden_iframe" style="display:none;">
+        <input type="hidden" name="data" id="hidden_data">
+    </form>
+
+    <div id="lock-screen">
+        <div class="text-center p-8 max-w-md w-full">
+            <div class="mb-6 text-blue-600"><i class="fa-solid fa-qrcode text-6xl"></i></div>
+            <h1 class="text-3xl font-bold text-gray-800 mb-2">勤怠スキャナー</h1>
+            <p class="text-gray-500 mb-8">システムは待機中です</p>
+            <div class="bg-white p-6 rounded-2xl shadow-lg border border-gray-100">
+                <div class="text-4xl font-mono font-bold text-gray-700 mb-2" id="lock-clock">00:00</div>
+                <div class="text-sm text-gray-400 mb-6" id="lock-date">--/--/--</div>
+                <div id="init-setup-area" class="hidden">
+                    <p class="text-sm text-red-500 mb-3 font-bold"><i class="fa-solid fa-triangle-exclamation mr-1"></i>職員マスタが未登録です</p>
+                    <button onclick="document.getElementById('csvInputLock').click()" class="w-full py-3 bg-blue-600 text-white rounded-xl font-bold shadow-md hover:bg-blue-700 btn-press mb-2"><i class="fa-solid fa-file-csv mr-2"></i>CSVをインポートして開始</button>
+                    <input type="file" id="csvInputLock" accept=".csv" class="hidden" onchange="handleFileUpload(this, true)">
+                    <p class="text-xs text-gray-400">※初回のみログイン不要で登録できます</p>
+                </div>
+                <div id="unlock-area" class="hidden">
+                    <button onclick="openManagerLogin('責任者', true)" class="w-full py-3 bg-white border-2 border-blue-500 text-blue-600 rounded-xl font-bold shadow-sm hover:bg-blue-50 btn-press mb-3"><i class="fa-solid fa-user-shield mr-2"></i>責任者で開始</button>
+                    <button onclick="openManagerLogin('管理者', true)" class="w-full py-3 bg-gray-100 text-gray-600 rounded-xl font-bold hover:bg-gray-200 btn-press text-sm"><i class="fa-solid fa-gear mr-2"></i>管理者設定</button>
+                </div>
+            </div>
+            <div class="mt-8 text-xs text-gray-400">システムを稼働させるにはログインしてください</div>
+        </div>
+    </div>
+
+    <header class="bg-white shadow-sm z-10 p-3 flex justify-between items-center shrink-0">
+        <div class="flex items-center">
+            <div class="bg-blue-600 text-white p-2 rounded-lg mr-3"><i class="fa-solid fa-qrcode text-xl"></i></div>
+            <div><h1 class="font-bold text-lg leading-tight">勤怠スキャナー</h1><p class="text-xs text-gray-500" id="currentDateDisplay">--/--/-- (--)</p></div>
+        </div>
+        <div class="text-right"><div class="text-2xl font-mono font-bold text-blue-600" id="clockDisplay">00:00</div></div>
+    </header>
+
+    <main id="main-content" class="flex-1 flex flex-col relative overflow-y-auto p-4 max-w-2xl mx-auto w-full">
+        <div class="grid grid-cols-2 gap-2 mb-4 shrink-0">
+            <button onclick="setMode('IN')" id="btn-mode-in" class="mode-btn btn-press p-3 rounded-xl font-bold text-white shadow-md flex flex-col items-center justify-center bg-blue-500 ring-2 ring-blue-300">
+                <i class="fa-solid fa-right-to-bracket mb-1 text-2xl"></i><span>出勤</span>
+            </button>
+            <button onclick="setMode('OUT')" id="btn-mode-out" class="mode-btn btn-press p-3 rounded-xl font-bold text-gray-600 bg-white shadow-sm border flex flex-col items-center justify-center">
+                <i class="fa-solid fa-right-from-bracket mb-1 text-2xl"></i><span>退勤</span>
+            </button>
+        </div>
+        <div class="relative bg-white p-2 rounded-2xl shadow-sm border border-gray-200 mb-4 shrink-0">
+            <div id="reader" class="h-64 sm:h-72 w-full bg-black rounded-xl overflow-hidden relative">
+                <div class="absolute inset-0 flex items-center justify-center text-white z-0"><p class="text-sm opacity-50" id="camera-status-text">待機中...</p></div>
+            </div>
+            <div id="scan-result-overlay" class="absolute inset-0 bg-green-500/90 rounded-xl flex flex-col items-center justify-center text-white hidden z-10 transition-opacity">
+                <i class="fa-solid fa-check-circle text-5xl mb-2" id="result-icon"></i>
+                <h3 class="text-2xl font-bold" id="result-name">氏名</h3>
+                <p class="text-lg" id="result-mode">出勤</p>
+                <p class="text-sm opacity-80 mt-2" id="result-time">12:34</p>
+                <p class="text-xs mt-2 font-bold px-2 py-1 rounded bg-black/20" id="result-gas-status"></p>
+            </div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 flex flex-col overflow-hidden">
+            <div class="p-3 border-b bg-gray-50 flex justify-between items-center">
+                <h2 class="font-bold text-gray-700 flex items-center"><i class="fa-solid fa-list-ul mr-2 text-blue-500"></i>本日の打刻履歴</h2>
+                <div class="flex items-center space-x-2"><span class="text-xs bg-gray-200 px-2 py-1 rounded-full" id="log-count">0件</span></div>
+            </div>
+            <div class="overflow-y-auto p-2 custom-scrollbar flex-1" id="log-container">
+                <div class="text-center text-gray-400 py-4 text-sm">履歴はありません</div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="bg-white border-t p-3 shrink-0">
+        <div class="grid grid-cols-2 gap-4 max-w-2xl mx-auto">
+            <button onclick="openManagerLogin('責任者', false)" class="btn-press py-2 px-4 rounded-lg bg-gray-100 text-gray-700 font-semibold text-sm flex items-center justify-center hover:bg-gray-200"><i class="fa-solid fa-user-shield mr-2"></i>責任者メニュー</button>
+            <button onclick="openManagerLogin('管理者', false)" class="btn-press py-2 px-4 rounded-lg bg-gray-800 text-white font-semibold text-sm flex items-center justify-center hover:bg-gray-700"><i class="fa-solid fa-gear mr-2"></i>管理者メニュー</button>
+        </div>
+    </footer>
+
+    <div id="login-modal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        <div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 m-4 transform transition-all scale-100">
+            <div class="flex justify-between items-center mb-6"><h3 class="text-xl font-bold text-gray-800" id="login-title">ログイン</h3><button onclick="closeModal('login-modal')" class="text-gray-400 hover:text-gray-600"><i class="fa-solid fa-times text-xl"></i></button></div>
+            <div class="space-y-4">
+                <div><label class="block text-sm font-medium text-gray-700 mb-1">氏名を選択</label><select id="login-user-select" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none bg-gray-50"></select></div>
+                <div><label class="block text-sm font-medium text-gray-700 mb-1">パスワード</label><input type="password" id="login-password" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="パスワードを入力" inputmode="numeric"></div>
+                <button onclick="attemptLogin()" class="w-full py-3 bg-blue-600 text-white rounded-lg font-bold shadow-md hover:bg-blue-700 btn-press">ログイン</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="staff-leader-modal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        <div class="bg-white w-full max-w-md rounded-2xl shadow-2xl p-6 m-4 flex flex-col max-h-[90vh]">
+            <div class="flex justify-between items-center mb-4 shrink-0"><div><h3 class="text-xl font-bold text-gray-800"><i class="fa-solid fa-user-shield text-blue-600 mr-2"></i>責任者メニュー</h3><p class="text-xs text-gray-500" id="leader-name-display">担当者: --</p></div><button onclick="closeLeaderMenu()" class="text-gray-400 hover:text-gray-600"><i class="fa-solid fa-times text-xl"></i></button></div>
+            <div class="overflow-y-auto flex-1 space-y-4 pr-1 custom-scrollbar">
+                <div id="pw-change-section" class="bg-yellow-50 border border-yellow-200 rounded-xl p-4">
+                    <h4 class="font-bold text-yellow-800 mb-2 flex items-center"><i class="fa-solid fa-key mr-2"></i>セキュリティ設定</h4>
+                    <p class="text-xs text-yellow-700 mb-3">初期パスワードを使用しています。<br>この端末でのみ有効な専用パスワードに変更できます（1回のみ）。</p>
+                    <button onclick="openPwChangeModal()" class="w-full py-2 bg-yellow-100 text-yellow-800 border border-yellow-300 rounded-lg font-bold hover:bg-yellow-200 btn-press text-sm">パスワードを変更する</button>
+                </div>
+                <div id="pw-changed-msg" class="bg-green-50 border border-green-200 rounded-xl p-4 hidden"><p class="text-sm text-green-700 flex items-center font-bold"><i class="fa-solid fa-check-circle mr-2"></i>パスワードは変更済みです</p></div>
+                <hr class="border-gray-100">
+                <div><h4 class="font-bold text-gray-700 mb-2">本日の打刻一覧</h4><div class="bg-gray-50 rounded-lg border p-2 h-64 overflow-y-auto text-sm" id="leader-log-list"></div></div>
+            </div>
+            <div class="mt-4 pt-4 border-t shrink-0"><button onclick="closeLeaderMenu()" class="w-full py-3 bg-blue-600 text-white rounded-lg font-bold shadow hover:bg-blue-700">業務開始 / 戻る</button></div>
+        </div>
+    </div>
+
+    <div id="pw-change-modal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+        <div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 m-4">
+            <h3 class="text-lg font-bold text-gray-800 mb-4">新しいパスワードの設定</h3><p class="text-xs text-gray-500 mb-4">パスワードは一度しか変更できません。<br>忘れないように管理してください。</p>
+            <div class="space-y-3">
+                <div><label class="text-xs font-bold text-gray-500">新しいパスワード (数字推奨)</label><input type="password" id="new-pw-1" class="w-full p-3 border rounded-lg bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all" placeholder="例: 1234" inputmode="numeric"></div>
+                <div><label class="text-xs font-bold text-gray-500">確認のため再入力</label><input type="password" id="new-pw-2" class="w-full p-3 border rounded-lg bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all" placeholder="もう一度入力" inputmode="numeric"></div>
+            </div>
+            <div class="grid grid-cols-2 gap-3 mt-6"><button onclick="closeModal('pw-change-modal')" class="py-2 bg-gray-100 text-gray-600 rounded-lg font-bold">キャンセル</button><button onclick="executePwChange()" class="py-2 bg-blue-600 text-white rounded-lg font-bold shadow hover:bg-blue-700">変更する</button></div>
+        </div>
+    </div>
+
+    <div id="admin-modal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        <div class="bg-white w-full max-w-md rounded-2xl shadow-2xl p-6 m-4 flex flex-col max-h-[90vh]">
+            <div class="flex justify-between items-center mb-4"><h3 class="text-xl font-bold text-gray-800"><i class="fa-solid fa-gear text-gray-700 mr-2"></i>管理者メニュー</h3><button onclick="closeAdminMenu()" class="text-gray-400 hover:text-gray-600"><i class="fa-solid fa-times text-xl"></i></button></div>
+            <div class="space-y-4 overflow-y-auto p-1 custom-scrollbar">
+                <div class="bg-blue-50 p-4 rounded-xl border border-blue-100">
+                    <h4 class="font-bold text-blue-800 mb-3">職員・利用者マスタ登録</h4><p class="text-xs text-blue-600 mb-3">CSVファイルを読み込んで職員リストを更新します。<br>※「権限パスワード」列が必要です。</p>
+                    <input type="file" id="csvInput" accept=".csv" class="hidden" onchange="handleFileUpload(this, false)">
+                    <button onclick="document.getElementById('csvInput').click()" class="w-full py-2 bg-white border border-blue-300 text-blue-600 rounded-lg font-bold hover:bg-blue-50 mb-2"><i class="fa-solid fa-upload mr-2"></i>CSVインポート</button>
+                    <div id="csv-status" class="text-xs text-center text-gray-500 mt-1">未読み込み</div>
+                </div>
+                <div class="bg-green-50 p-4 rounded-xl border border-green-200">
+                    <h4 class="font-bold text-green-800 mb-2 flex items-center"><i class="fa-brands fa-google-drive mr-2"></i>クラウド連携設定</h4>
+                    <p class="text-xs text-green-700 mb-3">Googleスプレッドシート(GAS)のWebアプリURLを設定すると、打刻データをリアルタイムで送信します。</p>
+                    <input type="text" id="gas-url-input" class="w-full p-2 text-xs border border-green-300 rounded mb-2" placeholder="https://script.google.com/macros/s/.../exec">
+                    <div id="gas-url-warning" class="hidden text-xs text-red-500 mb-2 bg-red-50 p-2 rounded"><i class="fa-solid fa-triangle-exclamation mr-1"></i>URLの末尾が「/exec」ではありません。</div>
+                    <button onclick="saveGasUrl()" class="w-full py-2 bg-green-600 text-white rounded-lg font-bold shadow hover:bg-green-700 text-sm">設定を保存</button>
+                    <p id="gas-status-msg" class="text-xs text-green-600 mt-2 text-center h-4"></p>
+                </div>
+                <div class="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                    <h4 class="font-bold text-gray-700 mb-3">打刻データ出力</h4>
+                    <button onclick="downloadCSV()" class="w-full py-3 bg-gray-600 text-white rounded-lg font-bold shadow hover:bg-gray-700"><i class="fa-solid fa-file-csv mr-2"></i>CSVダウンロード</button>
+                </div>
+                <div class="border-t pt-4 mt-4">
+                    <h4 class="font-bold text-red-600 mb-2">危険な操作</h4>
+                    <button onclick="clearAllData()" class="text-red-500 text-sm hover:underline mb-4 block">全データを削除（初期化）</button>
+                    <h4 class="font-bold text-gray-600 mb-2">システム</h4>
+                    <button onclick="exitApp()" class="w-full py-2 bg-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-300 text-sm"><i class="fa-solid fa-power-off mr-2"></i>アプリを終了する</button>
+                </div>
+                <div class="mt-4 pt-4 border-t shrink-0"><button onclick="closeAdminMenu()" class="w-full py-3 bg-blue-600 text-white rounded-lg font-bold shadow hover:bg-blue-700">業務開始 / 戻る</button></div>
+            </div>
+        </div>
+    </div>
+
+    <audio id="sound-scan" src="https://assets.mixkit.co/sfx/preview/mixkit-software-interface-start-2574.mp3"></audio>
+    <audio id="sound-error" src="https://assets.mixkit.co/sfx/preview/mixkit-simple-game-countdown-921.mp3"></audio>
+
+    <script>
+        const APP_KEY = 'attendance_app_v2';
+        const STORAGE_KEY_LOGS = `${APP_KEY}_logs`;
+        const STORAGE_KEY_STAFF = `${APP_KEY}_staff`;
+        const STORAGE_KEY_CUSTOM_PW = `${APP_KEY}_custom_passwords`;
+        const STORAGE_KEY_GAS_URL = `${APP_KEY}_gas_url`;
+
+        let currentMode = 'IN'; 
+        let html5QrcodeScanner = null;
+        let isScanning = false;
+        let isAppLocked = true;
+        let isUnlockRequestFromLockScreen = false;
+        
+        let staffList = [];
+        let attendanceLogs = [];
+        let customPasswords = {};
+        let currentUser = null;
+        let gasWebAppUrl = "";
+        let isGasSending = false;
+
+        window.onload = function() {
+            loadData();
+            updateClock();
+            setInterval(updateClock, 1000);
+            renderLogs();
+            updateCsvStatus();
+            setMode('IN');
+            checkLockState();
+            if (gasWebAppUrl) document.getElementById('gas-url-input').value = gasWebAppUrl;
+            const iframe = document.getElementById('hidden_iframe');
+            if (iframe) iframe.onload = onGasResponse;
+        };
+
+        function checkLockState() {
+            const lockScreen = document.getElementById('lock-screen');
+            const initSetup = document.getElementById('init-setup-area');
+            const unlockArea = document.getElementById('unlock-area');
+            if (staffList.length === 0) {
+                initSetup.classList.remove('hidden');
+                unlockArea.classList.add('hidden');
+            } else {
+                initSetup.classList.add('hidden');
+                unlockArea.classList.remove('hidden');
+            }
+        }
+
+        function unlockApp() {
+            const lockScreen = document.getElementById('lock-screen');
+            lockScreen.classList.add('hidden-lock');
+            isAppLocked = false;
+            setTimeout(() => {
+                if (!html5QrcodeScanner) startScanner();
+                else isScanning = true;
+            }, 300);
+        }
+
+        function loadData() {
+            const savedStaff = localStorage.getItem(STORAGE_KEY_STAFF);
+            if (savedStaff) staffList = JSON.parse(savedStaff);
+            const savedLogs = localStorage.getItem(STORAGE_KEY_LOGS);
+            if (savedLogs) attendanceLogs = JSON.parse(savedLogs);
+            const savedPw = localStorage.getItem(STORAGE_KEY_CUSTOM_PW);
+            if (savedPw) customPasswords = JSON.parse(savedPw);
+            const savedUrl = localStorage.getItem(STORAGE_KEY_GAS_URL);
+            if (savedUrl) gasWebAppUrl = savedUrl;
+        }
+
+        function saveData() {
+            localStorage.setItem(STORAGE_KEY_LOGS, JSON.stringify(attendanceLogs));
+            localStorage.setItem(STORAGE_KEY_STAFF, JSON.stringify(staffList));
+            localStorage.setItem(STORAGE_KEY_CUSTOM_PW, JSON.stringify(customPasswords));
+        }
+
+        function clearAllData() {
+            if(!confirm("本当に全てのデータを削除しますか？\n職員マスタ、打刻履歴、変更済みパスワード全てが消えます。")) return;
+            localStorage.removeItem(STORAGE_KEY_LOGS);
+            localStorage.removeItem(STORAGE_KEY_STAFF);
+            localStorage.removeItem(STORAGE_KEY_CUSTOM_PW);
+            localStorage.removeItem(STORAGE_KEY_GAS_URL);
+            location.reload();
+        }
+
+        function exitApp() {
+            if(confirm("システムを終了しますか？\n(ブラウザのタブが閉じます)")) {
+                window.close();
+                setTimeout(() => alert("ブラウザの仕様により自動で閉じられませんでした。\n手動でタブを閉じてください。"), 100);
+            }
+        }
+
+        function updateClock() {
+            const now = new Date();
+            const days = ['日', '月', '火', '水', '木', '金', '土'];
+            const dateStr = `${now.getFullYear()}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getDate().toString().padStart(2,'0')} (${days[now.getDay()]})`;
+            const timeStr = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+            document.getElementById('currentDateDisplay').textContent = dateStr;
+            document.getElementById('clockDisplay').textContent = timeStr;
+            document.getElementById('lock-date').textContent = dateStr;
+            document.getElementById('lock-clock').textContent = timeStr;
+        }
+
+        function setMode(mode) {
+            currentMode = mode;
+            document.querySelectorAll('.mode-btn').forEach(btn => {
+                btn.classList.remove('bg-blue-500', 'text-white', 'ring-2', 'ring-blue-300');
+                btn.classList.add('bg-white', 'text-gray-600');
+            });
+            const activeBtn = document.getElementById(mode === 'IN' ? 'btn-mode-in' : 'btn-mode-out');
+            activeBtn.classList.remove('bg-white', 'text-gray-600');
+            activeBtn.classList.add('bg-blue-500', 'text-white', 'ring-2', 'ring-blue-300');
+        }
+
+        function startScanner() {
+            if (html5QrcodeScanner) return; 
+            document.getElementById('camera-status-text').textContent = "カメラ起動中...";
+            html5QrcodeScanner = new Html5Qrcode("reader");
+            const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+            html5QrcodeScanner.start({ facingMode: "environment" }, config, onScanSuccess).catch(err => {
+                console.error("Camera start failed", err);
+                document.getElementById('reader').innerHTML = '<div class="text-white text-center p-4">カメラを起動できませんでした。<br>権限を確認してください。</div>';
+            });
+            isScanning = true;
+        }
+
+        function onScanSuccess(decodedText, decodedResult) {
+            if (!isScanning || isAppLocked) return;
+            isScanning = false;
+            setTimeout(() => isScanning = true, 2500);
+            const user = staffList.find(s => s.id === decodedText || s.name === decodedText);
+            if (user) recordAttendance(user);
+            else {
+                showResultOverlay(`未登録: ${decodedText}`, "エラー", false, false);
+                playAudio('error');
+            }
+        }
+
+        function recordAttendance(user) {
+            const now = new Date();
+            const todayStr = now.toLocaleDateString('ja-JP');
+            const duplicate = attendanceLogs.find(log => 
+                log.date === todayStr && 
+                log.userName === user.name && 
+                log.mode === currentMode &&
+                log.status === 'valid'
+            );
+
+            if (duplicate) {
+                showResultOverlay(user.name, currentMode, false, true); 
+                playAudio('error');
+                return;
+            }
+
+            const log = {
+                timestamp: now.toISOString(),
+                date: todayStr,
+                time: now.toLocaleTimeString('ja-JP'),
+                userId: user.id || "-",
+                userName: user.name,
+                userRole: user.systemRole, 
+                userCategory: user.userCategory || "", // 追加: 利用者区分
+                mode: currentMode,
+                status: 'valid'
+            };
+            
+            attendanceLogs.unshift(log); 
+            saveData();
+            renderLogs();
+            showResultOverlay(user.name, currentMode, true, false);
+            playAudio('success');
+            sendToGas(log);
+        }
+
+        function saveGasUrl() {
+            const urlInput = document.getElementById('gas-url-input');
+            const url = urlInput.value.trim();
+            const warningEl = document.getElementById('gas-url-warning');
+            if (url && !url.endsWith('/exec')) {
+                warningEl.classList.remove('hidden');
+                warningEl.innerHTML = `<i class="fa-solid fa-triangle-exclamation mr-1"></i>URLの末尾が「/exec」ではありません。<br>デプロイURLを再確認してください。`;
+            } else {
+                warningEl.classList.add('hidden');
+            }
+            gasWebAppUrl = url;
+            localStorage.setItem(STORAGE_KEY_GAS_URL, url);
+            const msg = document.getElementById('gas-status-msg');
+            msg.textContent = "保存しました";
+            setTimeout(() => msg.textContent = "", 2000);
+        }
+
+        function sendToGas(log) {
+            if (!gasWebAppUrl) return;
+            const gasPayload = [{
+                displayTime: `${log.date} ${log.time}`,
+                id: log.userId,
+                name: log.userName,
+                mode: log.mode,
+                timestamp: log.timestamp
+            }];
+            const statusEl = document.getElementById('result-gas-status');
+            statusEl.textContent = "クラウド送信中...";
+            statusEl.className = "text-xs mt-2 text-blue-300 font-bold px-2 py-1 rounded bg-black/40";
+            isGasSending = true;
+            try {
+                const form = document.getElementById('hidden_form');
+                const dataInput = document.getElementById('hidden_data');
+                form.action = gasWebAppUrl;
+                dataInput.value = JSON.stringify(gasPayload);
+                form.submit();
+            } catch (e) {
+                console.error("Form submit error", e);
+                statusEl.textContent = "送信エラー";
+                statusEl.className = "text-xs mt-2 text-red-200 font-bold px-2 py-1 rounded bg-red-900/80";
+            }
+        }
+
+        function onGasResponse() {
+            if (!isGasSending) return; 
+            const statusEl = document.getElementById('result-gas-status');
+            statusEl.textContent = "クラウド送信完了";
+            statusEl.className = "text-xs mt-2 text-green-300 font-bold px-2 py-1 rounded bg-black/40";
+            isGasSending = false;
+            setTimeout(() => {
+                statusEl.textContent = "";
+                statusEl.className = "text-xs mt-2 opacity-75";
+            }, 2500);
+        }
+
+        function showResultOverlay(name, modeText, isSuccess, isDuplicate = false) {
+            const overlay = document.getElementById('scan-result-overlay');
+            const resName = document.getElementById('result-name');
+            const resMode = document.getElementById('result-mode');
+            const resTime = document.getElementById('result-time');
+            const gasStatus = document.getElementById('result-gas-status');
+            const resultIcon = document.getElementById('result-icon');
+            
+            resName.textContent = name;
+            gasStatus.textContent = ""; 
+
+            if (isSuccess) {
+                overlay.className = "absolute inset-0 bg-blue-500/95 rounded-xl flex flex-col items-center justify-center text-white z-10 fade-enter-active";
+                resultIcon.className = "fa-solid fa-check-circle text-5xl mb-2";
+                if (currentMode === 'OUT') overlay.classList.replace('bg-blue-500/95', 'bg-orange-500/95');
+                resMode.textContent = currentMode === 'IN' ? '出勤しました' : '退勤しました';
+            } else if (isDuplicate) {
+                overlay.className = "absolute inset-0 bg-yellow-500/95 rounded-xl flex flex-col items-center justify-center text-white z-10 fade-enter-active";
+                resultIcon.className = "fa-solid fa-triangle-exclamation text-5xl mb-2";
+                resMode.textContent = "既に完了しています";
+            } else {
+                overlay.className = "absolute inset-0 bg-red-500/95 rounded-xl flex flex-col items-center justify-center text-white z-10 fade-enter-active";
+                resultIcon.className = "fa-solid fa-times-circle text-5xl mb-2";
+                resMode.textContent = "未登録のQRコード";
+            }
+            
+            const now = new Date();
+            resTime.textContent = `${now.getHours()}:${now.getMinutes().toString().padStart(2,'0')}`;
+            overlay.classList.remove('hidden');
+            setTimeout(() => overlay.classList.add('hidden'), 2000);
+        }
+
+        function renderLogs() {
+            const container = document.getElementById('log-container');
+            const todayStr = new Date().toLocaleDateString('ja-JP');
+            const todayLogs = attendanceLogs.filter(l => l.date === todayStr);
+            document.getElementById('log-count').textContent = `${todayLogs.length}件`;
+            if (todayLogs.length === 0) {
+                container.innerHTML = '<div class="text-center text-gray-400 py-4 text-sm">履歴はありません</div>';
+                return;
+            }
+            let html = '';
+            todayLogs.forEach(log => {
+                const isOut = log.mode === 'OUT';
+                const colorClass = isOut ? 'text-orange-600 bg-orange-50' : 'text-blue-600 bg-blue-50';
+                const label = isOut ? '退' : '出';
+                html += `<div class="flex justify-between items-center p-2 mb-2 rounded-lg border border-gray-100 bg-white shadow-sm"><div class="flex items-center"><span class="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs mr-3 ${colorClass}">${label}</span><div><p class="font-bold text-sm text-gray-800">${log.userName}</p><p class="text-xs text-gray-500">${log.userId || ''}</p></div></div><div class="text-right"><p class="font-mono font-bold text-lg text-gray-700">${log.time.slice(0,5)}</p></div></div>`;
+            });
+            container.innerHTML = html;
+        }
+
+        function playAudio(type) {
+            const audio = document.getElementById(type === 'success' ? 'sound-scan' : 'sound-error');
+            audio.currentTime = 0;
+            audio.play().catch(e => console.log('Audio play failed', e));
+        }
+
+        function openManagerLogin(role, isFromLockScreen = false) {
+            targetRoleForLogin = role;
+            isUnlockRequestFromLockScreen = isFromLockScreen;
+            const modal = document.getElementById('login-modal');
+            const title = document.getElementById('login-title');
+            const select = document.getElementById('login-user-select');
+            const passInput = document.getElementById('login-password');
+            title.textContent = `${role}ログイン`;
+            passInput.value = '';
+            const targets = staffList.filter(s => {
+                if (!s.systemRole) return false;
+                if (role === '責任者') return s.systemRole.includes('責任者') || s.systemRole.includes('管理者');
+                if (role === '管理者') return s.systemRole.includes('管理者');
+                return false;
+            });
+            if (targets.length === 0) { alert(`「${role}」権限を持つユーザーがマスタに登録されていません。\nCSVを確認してください。`); return; }
+            select.innerHTML = targets.map(t => `<option value="${t.name}">${t.name}</option>`).join('');
+            modal.classList.add('active');
+            passInput.focus();
+        }
+
+        function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+        function closeAdminMenu() { closeModal('admin-modal'); if (isUnlockRequestFromLockScreen && isAppLocked) unlockApp(); }
+        function closeLeaderMenu() { closeModal('staff-leader-modal'); if (isUnlockRequestFromLockScreen && isAppLocked) unlockApp(); }
+
+        function attemptLogin() {
+            const select = document.getElementById('login-user-select');
+            const passInput = document.getElementById('login-password');
+            const name = select.value;
+            const inputPass = passInput.value;
+            if (!name) return;
+            const user = staffList.find(s => s.name === name);
+            if (!user) return;
+            let valid = false;
+            let isCustom = false;
+            if (customPasswords[name] && customPasswords[name].password) {
+                if (customPasswords[name].password === inputPass) { valid = true; isCustom = true; }
+            } else if (user.systemPassword && user.systemPassword === inputPass) { valid = true; isCustom = false; }
+            if (valid) {
+                closeModal('login-modal');
+                currentUser = { ...user, isCustomPassword: isCustom };
+                if (targetRoleForLogin === '管理者') document.getElementById('admin-modal').classList.add('active');
+                else openLeaderMenu();
+            } else {
+                alert('パスワードが違います');
+                passInput.value = '';
+                playAudio('error');
+            }
+        }
+
+        function openLeaderMenu() {
+            const modal = document.getElementById('staff-leader-modal');
+            document.getElementById('leader-name-display').textContent = `担当者: ${currentUser.name}`;
+            const pwSection = document.getElementById('pw-change-section');
+            const pwChangedMsg = document.getElementById('pw-changed-msg');
+            if (customPasswords[currentUser.name] && customPasswords[currentUser.name].changed) { pwSection.classList.add('hidden'); pwChangedMsg.classList.remove('hidden'); }
+            else { pwSection.classList.remove('hidden'); pwChangedMsg.classList.add('hidden'); }
+            const list = document.getElementById('leader-log-list');
+            const todayStr = new Date().toLocaleDateString('ja-JP');
+            const todayLogs = attendanceLogs.filter(l => l.date === todayStr);
+            if(todayLogs.length === 0) list.innerHTML = '<p class="text-center text-gray-400 mt-4">データなし</p>';
+            else list.innerHTML = todayLogs.map(log => `<div class="flex justify-between border-b p-2"><span>${log.userName}</span><span class="font-mono">${log.mode} ${log.time}</span></div>`).join('');
+            modal.classList.add('active');
+        }
+
+        function openPwChangeModal() { document.getElementById('new-pw-1').value = ''; document.getElementById('new-pw-2').value = ''; document.getElementById('pw-change-modal').classList.add('active'); }
+        function executePwChange() {
+            const p1 = document.getElementById('new-pw-1').value;
+            const p2 = document.getElementById('new-pw-2').value;
+            if (!p1) { alert('パスワードを入力してください'); return; }
+            if (p1 !== p2) { alert('確認用パスワードが一致しません'); return; }
+            if (p1.length < 4) { alert('セキュリティのため4文字以上で設定してください'); return; }
+            if (!confirm(`パスワードを「${p1}」に変更します。\n変更は1回のみ可能です。\nよろしいですか？`)) return;
+            customPasswords[currentUser.name] = { password: p1, changed: true };
+            saveData();
+            alert('パスワードを変更しました。\n次回から新しいパスワードを使用してください。');
+            closeModal('pw-change-modal');
+            openLeaderMenu(); 
+        }
+
+        function handleFileUpload(input, isInitialSetup = false) {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            const processContent = (text, encoding) => {
+                try {
+                    const rows = text.split(/\r\n|\n/);
+                    let headerIndex = -1;
+                    for(let i=0; i<Math.min(rows.length, 20); i++) {
+                        if (rows[i].includes('氏名') && rows[i].includes('システム権限')) { headerIndex = i; break; }
+                    }
+                    if (headerIndex === -1) return false;
+                    const headers = rows[headerIndex].split(',').map(h => h.trim());
+                    const idxId = headers.indexOf('職員ID／利用者ID');
+                    const idxName = headers.indexOf('氏名');
+                    const idxRole = headers.indexOf('システム権限');
+                    const idxCat = headers.indexOf('利用者区分');
+                    const idxPass = headers.indexOf('権限パスワード');
+                    if (idxName === -1) throw new Error('「氏名」列が見つかりません'); 
+                    const newStaff = [];
+                    for (let i = headerIndex + 1; i < rows.length; i++) {
+                        const row = rows[i].split(',');
+                        if (row.length < headers.length) continue;
+                        const name = row[idxName].trim();
+                        if (!name) continue;
+                        newStaff.push({
+                            id: idxId !== -1 ? row[idxId].trim() : "",
+                            name: name,
+                            systemRole: idxRole !== -1 ? row[idxRole].trim() : "",
+                            userCategory: idxCat !== -1 ? row[idxCat].trim() : "", // 利用者区分を保存
+                            systemPassword: idxPass !== -1 ? row[idxPass].trim() : ""
+                        });
+                    }
+                    if (newStaff.length === 0) throw new Error('有効なデータが0件でした。');
+                    staffList = newStaff;
+                    saveData();
+                    updateCsvStatus();
+                    checkLockState();
+                    input.value = '';
+                    const successMsg = `${newStaff.length}名のデータを登録しました。\n(文字コード: ${encoding})`;
+                    if (isInitialSetup) { setTimeout(() => { alert(successMsg + '\n\n初期設定が完了しました。システムを開始します。'); unlockApp(); }, 100); } else { alert(successMsg); }
+                    return true;
+                } catch (err) { throw err; }
+            };
+            reader.onload = function(e) {
+                const textSJIS = e.target.result;
+                try {
+                    const success = processContent(textSJIS, 'Shift_JIS');
+                    if (!success) {
+                        const readerUTF8 = new FileReader();
+                        readerUTF8.onload = function(e2) {
+                            try {
+                                const successUTF8 = processContent(e2.target.result, 'UTF-8');
+                                if (!successUTF8) { alert('CSV読み込みエラー:\nヘッダー行（「氏名」「システム権限」）が見つかりませんでした。'); input.value = ''; }
+                            } catch (err) { alert('CSV読み込みエラー (UTF-8): ' + err.message); input.value = ''; }
+                        };
+                        readerUTF8.readAsText(file, 'UTF-8');
+                    }
+                } catch (err) { alert('CSV処理中にエラーが発生しました: ' + err.message); input.value = ''; }
+            };
+            reader.readAsText(file, 'Shift_JIS');
+        }
+
+        function updateCsvStatus() {
+            const el = document.getElementById('csv-status');
+            if (staffList.length > 0) { el.textContent = `登録済み: ${staffList.length}名`; el.classList.add('text-green-600'); }
+            else { el.textContent = '未登録'; }
+        }
+
+        function downloadCSV() {
+            if (attendanceLogs.length === 0) { alert('出力するデータがありません'); return; }
+            // 追加: 利用者区分
+            const header = ["日付", "時刻", "氏名", "ID", "区分", "利用者区分", "打刻種別"];
+            const rows = attendanceLogs.map(log => [
+                log.date,
+                log.time,
+                log.userName,
+                log.userId,
+                log.userRole || "",
+                log.userCategory || "", // 追加
+                log.mode === 'IN' ? '出勤' : '退勤'
+            ]);
+            const csvContent = [header.join(','), ...rows.map(r => r.join(','))].join('\n');
+            const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.setAttribute("href", url);
+            link.setAttribute("download", `attendance_log_${new Date().toISOString().slice(0,10)}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+    </script>
+</body>
+</html>
