@@ -3,7 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>勤怠QRスキャナー (重複防止・区分対応)</title>
+    <title>勤怠QRスキャナー</title>
+    
+    <!-- アイコン設定 (Webアプリ用) -->
+    <link rel="icon" href="https://cdn-icons-png.flaticon.com/512/3281/3281355.png">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3281/3281355.png">
+    
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
@@ -52,12 +57,14 @@
         </div>
     </div>
 
-    <header class="bg-white shadow-sm z-10 p-3 flex justify-between items-center shrink-0">
-        <div class="flex items-center">
+    <header class="bg-white shadow-sm z-10 p-3 flex flex-col sm:flex-row justify-between items-center shrink-0">
+        <div class="flex items-center mb-2 sm:mb-0">
             <div class="bg-blue-600 text-white p-2 rounded-lg mr-3"><i class="fa-solid fa-qrcode text-xl"></i></div>
             <div><h1 class="font-bold text-lg leading-tight">勤怠スキャナー</h1><p class="text-xs text-gray-500" id="currentDateDisplay">--/--/-- (--)</p></div>
         </div>
-        <div class="text-right"><div class="text-2xl font-mono font-bold text-blue-600" id="clockDisplay">00:00</div></div>
+        <div class="text-right flex items-center gap-3">
+            <div class="text-2xl font-mono font-bold text-blue-600" id="clockDisplay">00:00</div>
+        </div>
     </header>
 
     <main id="main-content" class="flex-1 flex flex-col relative overflow-y-auto p-4 max-w-2xl mx-auto w-full">
@@ -110,6 +117,7 @@
         </div>
     </div>
 
+    <!-- 責任者メニュー (打刻削除機能追加) -->
     <div id="staff-leader-modal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
         <div class="bg-white w-full max-w-md rounded-2xl shadow-2xl p-6 m-4 flex flex-col max-h-[90vh]">
             <div class="flex justify-between items-center mb-4 shrink-0"><div><h3 class="text-xl font-bold text-gray-800"><i class="fa-solid fa-user-shield text-blue-600 mr-2"></i>責任者メニュー</h3><p class="text-xs text-gray-500" id="leader-name-display">担当者: --</p></div><button onclick="closeLeaderMenu()" class="text-gray-400 hover:text-gray-600"><i class="fa-solid fa-times text-xl"></i></button></div>
@@ -121,7 +129,13 @@
                 </div>
                 <div id="pw-changed-msg" class="bg-green-50 border border-green-200 rounded-xl p-4 hidden"><p class="text-sm text-green-700 flex items-center font-bold"><i class="fa-solid fa-check-circle mr-2"></i>パスワードは変更済みです</p></div>
                 <hr class="border-gray-100">
-                <div><h4 class="font-bold text-gray-700 mb-2">本日の打刻一覧</h4><div class="bg-gray-50 rounded-lg border p-2 h-64 overflow-y-auto text-sm" id="leader-log-list"></div></div>
+                <div>
+                    <h4 class="font-bold text-gray-700 mb-2 flex justify-between items-center">
+                        <span>本日の打刻一覧</span>
+                        <span class="text-xs font-normal text-red-500">※ゴミ箱で削除可</span>
+                    </h4>
+                    <div class="bg-gray-50 rounded-lg border p-2 h-64 overflow-y-auto text-sm" id="leader-log-list"></div>
+                </div>
             </div>
             <div class="mt-4 pt-4 border-t shrink-0"><button onclick="closeLeaderMenu()" class="w-full py-3 bg-blue-600 text-white rounded-lg font-bold shadow hover:bg-blue-700">業務開始 / 戻る</button></div>
         </div>
@@ -157,7 +171,8 @@
                     <p id="gas-status-msg" class="text-xs text-green-600 mt-2 text-center h-4"></p>
                 </div>
                 <div class="bg-gray-50 p-4 rounded-xl border border-gray-200">
-                    <h4 class="font-bold text-gray-700 mb-3">打刻データ出力</h4>
+                    <h4 class="font-bold text-gray-700 mb-3">打刻データ管理</h4>
+                    <button onclick="openLeaderMenu()" class="w-full py-2 bg-white border border-gray-300 text-gray-700 rounded-lg font-bold hover:bg-gray-50 mb-2 text-sm"><i class="fa-solid fa-list-check mr-2"></i>本日の履歴確認・削除</button>
                     <button onclick="downloadCSV()" class="w-full py-3 bg-gray-600 text-white rounded-lg font-bold shadow hover:bg-gray-700"><i class="fa-solid fa-file-csv mr-2"></i>CSVダウンロード</button>
                 </div>
                 <div class="border-t pt-4 mt-4">
@@ -193,6 +208,7 @@
         let currentUser = null;
         let gasWebAppUrl = "";
         let isGasSending = false;
+        let targetRoleForLogin = ""; // ログイン種別保持用
 
         window.onload = function() {
             loadData();
@@ -332,7 +348,7 @@
                 userId: user.id || "-",
                 userName: user.name,
                 userRole: user.systemRole, 
-                userCategory: user.userCategory || "", // 追加: 利用者区分
+                userCategory: user.userCategory || "", 
                 mode: currentMode,
                 status: 'valid'
             };
@@ -514,12 +530,38 @@
             const pwChangedMsg = document.getElementById('pw-changed-msg');
             if (customPasswords[currentUser.name] && customPasswords[currentUser.name].changed) { pwSection.classList.add('hidden'); pwChangedMsg.classList.remove('hidden'); }
             else { pwSection.classList.remove('hidden'); pwChangedMsg.classList.add('hidden'); }
+            
             const list = document.getElementById('leader-log-list');
             const todayStr = new Date().toLocaleDateString('ja-JP');
             const todayLogs = attendanceLogs.filter(l => l.date === todayStr);
-            if(todayLogs.length === 0) list.innerHTML = '<p class="text-center text-gray-400 mt-4">データなし</p>';
-            else list.innerHTML = todayLogs.map(log => `<div class="flex justify-between border-b p-2"><span>${log.userName}</span><span class="font-mono">${log.mode} ${log.time}</span></div>`).join('');
+            
+            if(todayLogs.length === 0) {
+                list.innerHTML = '<p class="text-center text-gray-400 mt-4">データなし</p>';
+            } else {
+                list.innerHTML = todayLogs.map(log => {
+                    const modeLabel = log.mode === 'IN' ? '<span class="text-blue-600 font-bold">出</span>' : '<span class="text-orange-600 font-bold">退</span>';
+                    return `
+                    <div class="flex justify-between items-center border-b p-2">
+                        <div class="flex items-center">
+                            <span class="mr-2">${modeLabel}</span>
+                            <span class="font-bold mr-2 text-gray-800">${log.userName}</span>
+                            <span class="font-mono text-gray-600 text-sm">${log.time.slice(0,5)}</span>
+                        </div>
+                        <button onclick="deleteLog('${log.timestamp}')" class="bg-red-50 text-red-500 hover:bg-red-100 hover:text-red-700 p-2 rounded-lg transition-colors">
+                            <i class="fa-solid fa-trash-can"></i>
+                        </button>
+                    </div>`;
+                }).join('');
+            }
             modal.classList.add('active');
+        }
+
+        function deleteLog(timestamp) {
+            if(!confirm("この打刻データを削除しますか？\n\n※iPad内のデータのみ削除されます。\n※すでにクラウドへ送信済みのデータは削除されません。")) return;
+            attendanceLogs = attendanceLogs.filter(log => log.timestamp !== timestamp);
+            saveData();
+            renderLogs(); // メイン画面更新
+            openLeaderMenu(); // 責任者メニュー内リスト更新
         }
 
         function openPwChangeModal() { document.getElementById('new-pw-1').value = ''; document.getElementById('new-pw-2').value = ''; document.getElementById('pw-change-modal').classList.add('active'); }
